@@ -1,0 +1,358 @@
+* >Natural Source Code: PRODMOV
+* PROGRAM: PRODMOV - PRODUCT MOVEMENT REPORT
+* DESCRIPTION: TRACKS PRODUCT MOVEMENT AND VELOCITY
+*              SHOWS SALES, ADJUSTMENTS, TRANSFERS, RETURNS
+*              IDENTIFIES FAST/SLOW MOVERS AND DEAD STOCK
+* LIBRARY: RETAILCORE
+* ADABAS FILES: 101 (PRODUCT), 102 (CATEGORY), 105 (INVENTORY),
+*               112 (ORDER-LINE), 107 (ADJUSTMENT)
+* CREATED: 2006-04-15  A. GARCIA
+* MODIFIED: 2013-09-22 - ADDED VELOCITY CLASSIFICATION
+* MODIFIED: 2020-01-10 - ADDED ABC ANALYSIS
+* -------------------------------------------------------
+DEFINE DATA
+LOCAL
+  1 #START-DATE           (D)
+  1 #END-DATE             (D)
+  1 #DAYS-IN-PERIOD       (N4)
+*
+* PRODUCT MOVEMENT ARRAY - MAX 500 PRODUCTS
+  1 #MAX-PRODS            (N4)   INIT <500>
+  1 #PROD-COUNT           (N4)
+  1 #PROD-DATA (1:500)
+    2 #PM-ID              (N8)
+    2 #PM-NAME            (A40)
+    2 #PM-SKU             (A15)
+    2 #PM-CAT-ID          (N6)
+    2 #PM-CAT-NAME        (A30)
+    2 #PM-COST            (N9.2)
+    2 #PM-PRICE           (N9.2)
+    2 #PM-QTY-SOLD        (N8)
+    2 #PM-REVENUE         (N13.2)
+    2 #PM-COGS            (N13.2)
+    2 #PM-QTY-RETURNED    (N8)
+    2 #PM-QTY-ADJUSTED    (N8)
+    2 #PM-QTY-TRANSFERRED (N8)
+    2 #PM-ON-HAND         (N10)
+    2 #PM-DAYS-OF-SUPPLY  (N6)
+    2 #PM-VELOCITY        (A1)
+    2 #PM-ABC-CLASS       (A1)
+    2 #PM-CUMUL-PCT       (N5.2)
+*
+* SORT WORK ARRAY
+  1 #SORT-IDX  (1:500)
+    2 #SI-ORIG-IDX       (N4)
+    2 #SI-VALUE          (N13.2)
+*
+* SUMMARY
+  1 #TOTAL-SOLD           (N10)
+  1 #TOTAL-REVENUE        (N13.2)
+  1 #TOTAL-COGS           (N13.2)
+  1 #FAST-COUNT           (N6)
+  1 #NORMAL-COUNT         (N6)
+  1 #SLOW-COUNT           (N6)
+  1 #DEAD-COUNT           (N6)
+  1 #A-COUNT              (N6)
+  1 #B-COUNT              (N6)
+  1 #C-COUNT              (N6)
+*
+  1 #IDX                  (N4)
+  1 #IDX2                 (N4)
+  1 #FOUND                (L)
+  1 #DAILY-RATE           (N7.2)
+  1 #RUNNING-PCT          (N7.2)
+*
+  1 PMR-VIEW VIEW OF PRODUCT-FILE
+    2 PMR-ID              (N8)
+    2 PMR-NAME            (A40)
+    2 PMR-SKU             (A15)
+    2 PMR-CAT-ID          (N6)
+    2 PMR-COST-PRICE      (N9.2)
+    2 PMR-LIST-PRICE      (N9.2)
+    2 PMR-STATUS          (A1)
+*
+  1 PCR-VIEW VIEW OF CATEGORY-FILE
+    2 PCR-ID              (N6)
+    2 PCR-NAME            (A30)
+*
+  1 PLR-VIEW VIEW OF ORDER-LINE-FILE
+    2 PLR-ORDER-ID        (N10)
+    2 PLR-PROD-ID         (N8)
+    2 PLR-QTY-ORDERED     (N6)
+    2 PLR-LINE-TOTAL      (N11.2)
+    2 PLR-UNIT-COST       (N9.2)
+    2 PLR-STATUS          (A3)
+*
+  1 PIR-VIEW VIEW OF INVENTORY-FILE
+    2 PIR-PROD-ID         (N8)
+    2 PIR-ON-HAND         (N8)
+    2 PIR-STATUS          (A1)
+*
+  1 PAR-VIEW VIEW OF ADJUSTMENT-FILE
+    2 PAR-PROD-ID         (N8)
+    2 PAR-ADJ-TYPE        (A2)
+    2 PAR-ADJ-QTY         (N8)
+    2 PAR-ADJ-DATE        (D)
+    2 PAR-STATUS          (A1)
+END-DEFINE
+*
+* -------------------------------------------------------
+* SETUP REPORT PERIOD - DEFAULT LAST 30 DAYS
+* -------------------------------------------------------
+MOVE *DATX TO #END-DATE
+MOVE #END-DATE TO #START-DATE
+SUBTRACT 30 FROM #START-DATE (D)
+COMPUTE #DAYS-IN-PERIOD = 30
+*
+* -------------------------------------------------------
+* STEP 1: LOAD ACTIVE PRODUCTS
+* -------------------------------------------------------
+READ PMR-VIEW BY PMR-ID
+  IF PMR-STATUS NE 'A'
+    ESCAPE TOP
+  END-IF
+  IF #PROD-COUNT >= #MAX-PRODS
+    ESCAPE BOTTOM
+  END-IF
+  ADD 1 TO #PROD-COUNT
+  MOVE PMR-ID         TO #PM-ID(#PROD-COUNT)
+  MOVE PMR-NAME       TO #PM-NAME(#PROD-COUNT)
+  MOVE PMR-SKU        TO #PM-SKU(#PROD-COUNT)
+  MOVE PMR-CAT-ID     TO #PM-CAT-ID(#PROD-COUNT)
+  MOVE PMR-COST-PRICE TO #PM-COST(#PROD-COUNT)
+  MOVE PMR-LIST-PRICE TO #PM-PRICE(#PROD-COUNT)
+*
+  * GET CATEGORY NAME
+  FIND PCR-VIEW WITH PCR-ID = PMR-CAT-ID
+    IF NO RECORDS FOUND
+      IGNORE
+    END-NOREC
+    MOVE PCR-NAME TO #PM-CAT-NAME(#PROD-COUNT)
+    ESCAPE BOTTOM
+  END-FIND
+END-READ
+*
+* -------------------------------------------------------
+* STEP 2: AGGREGATE SALES BY PRODUCT
+* -------------------------------------------------------
+READ PLR-VIEW BY PLR-PROD-ID
+  IF PLR-STATUS = 'CAN'
+    ESCAPE TOP
+  END-IF
+*
+  * FIND PRODUCT INDEX
+  MOVE FALSE TO #FOUND
+  FOR #IDX = 1 TO #PROD-COUNT
+    IF #PM-ID(#IDX) = PLR-PROD-ID
+      MOVE TRUE TO #FOUND
+      ESCAPE BOTTOM
+    END-IF
+  END-FOR
+  IF NOT #FOUND
+    ESCAPE TOP
+  END-IF
+*
+  ADD PLR-QTY-ORDERED TO #PM-QTY-SOLD(#IDX)
+  ADD PLR-LINE-TOTAL  TO #PM-REVENUE(#IDX)
+  ADD PLR-UNIT-COST * PLR-QTY-ORDERED TO #PM-COGS(#IDX)
+*
+  IF *COUNTER > 200000
+    ESCAPE BOTTOM
+  END-IF
+END-READ
+*
+* -------------------------------------------------------
+* STEP 3: CURRENT INVENTORY LEVELS
+* -------------------------------------------------------
+READ PIR-VIEW BY PIR-PROD-ID
+  IF PIR-STATUS NE 'A'
+    ESCAPE TOP
+  END-IF
+  FOR #IDX = 1 TO #PROD-COUNT
+    IF #PM-ID(#IDX) = PIR-PROD-ID
+      ADD PIR-ON-HAND TO #PM-ON-HAND(#IDX)
+      ESCAPE BOTTOM
+    END-IF
+  END-FOR
+  IF *COUNTER > 200000
+    ESCAPE BOTTOM
+  END-IF
+END-READ
+*
+* -------------------------------------------------------
+* STEP 4: ADJUSTMENT QUANTITIES
+* -------------------------------------------------------
+FIND PAR-VIEW WITH PAR-ADJ-DATE GE #START-DATE
+    AND PAR-ADJ-DATE LE #END-DATE
+  IF PAR-STATUS NE 'A'
+    ESCAPE TOP
+  END-IF
+  FOR #IDX = 1 TO #PROD-COUNT
+    IF #PM-ID(#IDX) = PAR-PROD-ID
+      ADD PAR-ADJ-QTY TO #PM-QTY-ADJUSTED(#IDX)
+      ESCAPE BOTTOM
+    END-IF
+  END-FOR
+  IF *COUNTER > 100000
+    ESCAPE BOTTOM
+  END-IF
+END-FIND
+*
+* -------------------------------------------------------
+* STEP 5: CALCULATE VELOCITY AND ABC CLASS
+* -------------------------------------------------------
+FOR #IDX = 1 TO #PROD-COUNT
+  * DAILY SELL-THROUGH RATE
+  IF #DAYS-IN-PERIOD > 0
+    COMPUTE #DAILY-RATE = #PM-QTY-SOLD(#IDX) / #DAYS-IN-PERIOD
+  END-IF
+*
+  * DAYS OF SUPPLY
+  IF #DAILY-RATE > 0
+    COMPUTE #PM-DAYS-OF-SUPPLY(#IDX) = #PM-ON-HAND(#IDX) / #DAILY-RATE
+  ELSE IF #PM-ON-HAND(#IDX) > 0
+    MOVE 999 TO #PM-DAYS-OF-SUPPLY(#IDX)
+  ELSE
+    MOVE 0 TO #PM-DAYS-OF-SUPPLY(#IDX)
+  END-IF
+  END-IF
+*
+  * VELOCITY CLASSIFICATION
+  * F=FAST (>1/DAY), N=NORMAL (0.1-1/DAY), S=SLOW (<0.1/DAY), D=DEAD (0)
+  IF #DAILY-RATE >= 1
+    MOVE 'F' TO #PM-VELOCITY(#IDX)
+    ADD 1 TO #FAST-COUNT
+  ELSE IF #DAILY-RATE >= 0.1
+    MOVE 'N' TO #PM-VELOCITY(#IDX)
+    ADD 1 TO #NORMAL-COUNT
+  ELSE IF #DAILY-RATE > 0
+    MOVE 'S' TO #PM-VELOCITY(#IDX)
+    ADD 1 TO #SLOW-COUNT
+  ELSE
+    MOVE 'D' TO #PM-VELOCITY(#IDX)
+    ADD 1 TO #DEAD-COUNT
+  END-IF
+  END-IF
+  END-IF
+*
+  * ACCUMULATE TOTALS
+  ADD #PM-QTY-SOLD(#IDX) TO #TOTAL-SOLD
+  ADD #PM-REVENUE(#IDX)  TO #TOTAL-REVENUE
+  ADD #PM-COGS(#IDX)     TO #TOTAL-COGS
+*
+  * POPULATE SORT ARRAY FOR ABC ANALYSIS
+  MOVE #IDX             TO #SI-ORIG-IDX(#IDX)
+  MOVE #PM-REVENUE(#IDX) TO #SI-VALUE(#IDX)
+END-FOR
+*
+* -------------------------------------------------------
+* STEP 6: ABC ANALYSIS (SORT BY REVENUE DESC)
+* BUBBLE SORT - ACCEPTABLE FOR <=500 ITEMS
+* -------------------------------------------------------
+FOR #IDX = 1 TO #PROD-COUNT - 1
+  FOR #IDX2 = #IDX + 1 TO #PROD-COUNT
+    IF #SI-VALUE(#IDX2) > #SI-VALUE(#IDX)
+      * SWAP
+      1 #TEMP-IDX (N4)
+      1 #TEMP-VAL (N13.2)
+      MOVE #SI-ORIG-IDX(#IDX)  TO #TEMP-IDX
+      MOVE #SI-VALUE(#IDX)     TO #TEMP-VAL
+      MOVE #SI-ORIG-IDX(#IDX2) TO #SI-ORIG-IDX(#IDX)
+      MOVE #SI-VALUE(#IDX2)    TO #SI-VALUE(#IDX)
+      MOVE #TEMP-IDX           TO #SI-ORIG-IDX(#IDX2)
+      MOVE #TEMP-VAL           TO #SI-VALUE(#IDX2)
+    END-IF
+  END-FOR
+END-FOR
+*
+* ASSIGN ABC CLASSES (A=TOP 80%, B=NEXT 15%, C=BOTTOM 5%)
+RESET #RUNNING-PCT
+FOR #IDX = 1 TO #PROD-COUNT
+  1 #ORIG (N4)
+  MOVE #SI-ORIG-IDX(#IDX) TO #ORIG
+  IF #TOTAL-REVENUE > 0
+    ADD #PM-REVENUE(#ORIG) / #TOTAL-REVENUE * 100
+      TO #RUNNING-PCT
+  END-IF
+  MOVE #RUNNING-PCT TO #PM-CUMUL-PCT(#ORIG)
+*
+  IF #RUNNING-PCT <= 80
+    MOVE 'A' TO #PM-ABC-CLASS(#ORIG)
+    ADD 1 TO #A-COUNT
+  ELSE IF #RUNNING-PCT <= 95
+    MOVE 'B' TO #PM-ABC-CLASS(#ORIG)
+    ADD 1 TO #B-COUNT
+  ELSE
+    MOVE 'C' TO #PM-ABC-CLASS(#ORIG)
+    ADD 1 TO #C-COUNT
+  END-IF
+  END-IF
+END-FOR
+*
+* -------------------------------------------------------
+* OUTPUT REPORT
+* -------------------------------------------------------
+WRITE 'RETAILCORE - PRODUCT MOVEMENT REPORT'
+WRITE '====================================='
+WRITE 'PERIOD:' #START-DATE 'TO' #END-DATE
+WRITE 'RUN DATE:' *DATX
+WRITE ' '
+*
+* DETAIL BY PRODUCT (SORTED BY REVENUE)
+WRITE 'PRODUCT DETAIL (SORTED BY REVENUE DESC)'
+WRITE '========================================='
+WRITE 'PRODUCT  SKU             CATEGORY              QTY SOLD'
+  '   REVENUE       COGS     ON HAND  DOS  VEL ABC'
+WRITE '-------- --------------- --------------------  --------'
+  '  ----------  ----------  --------  ---  --- ---'
+*
+FOR #IDX = 1 TO #PROD-COUNT
+  1 #P (N4)
+  MOVE #SI-ORIG-IDX(#IDX) TO #P
+  IF #PM-QTY-SOLD(#P) > 0 OR #PM-ON-HAND(#P) > 0
+    WRITE #PM-ID(#P) #PM-SKU(#P)
+      #PM-CAT-NAME(#P) (EM=XXXXXXXXXXXXXXXXXXXX)
+      #PM-QTY-SOLD(#P) #PM-REVENUE(#P) #PM-COGS(#P)
+      #PM-ON-HAND(#P) #PM-DAYS-OF-SUPPLY(#P)
+      #PM-VELOCITY(#P) #PM-ABC-CLASS(#P)
+  END-IF
+END-FOR
+*
+* VELOCITY SUMMARY
+WRITE ' '
+WRITE 'VELOCITY SUMMARY'
+WRITE '================'
+WRITE 'FAST MOVERS  (>1/DAY)    :' #FAST-COUNT
+WRITE 'NORMAL       (0.1-1/DAY) :' #NORMAL-COUNT
+WRITE 'SLOW MOVERS  (<0.1/DAY)  :' #SLOW-COUNT
+WRITE 'DEAD STOCK   (NO SALES)  :' #DEAD-COUNT
+WRITE 'TOTAL PRODUCTS           :' #PROD-COUNT
+*
+* ABC ANALYSIS SUMMARY
+WRITE ' '
+WRITE 'ABC ANALYSIS'
+WRITE '============'
+WRITE 'CLASS A (TOP 80% REVENUE):' #A-COUNT 'PRODUCTS'
+WRITE 'CLASS B (NEXT 15%)       :' #B-COUNT 'PRODUCTS'
+WRITE 'CLASS C (BOTTOM 5%)      :' #C-COUNT 'PRODUCTS'
+*
+* FINANCIAL SUMMARY
+WRITE ' '
+WRITE 'FINANCIAL SUMMARY'
+WRITE '================='
+WRITE 'TOTAL QUANTITY SOLD  :' #TOTAL-SOLD
+WRITE 'TOTAL REVENUE        :' #TOTAL-REVENUE
+WRITE 'TOTAL COGS           :' #TOTAL-COGS
+1 #GROSS-MARGIN (N13.2)
+1 #GROSS-MARGIN-PCT (N5.2)
+COMPUTE #GROSS-MARGIN = #TOTAL-REVENUE - #TOTAL-COGS
+IF #TOTAL-REVENUE > 0
+  COMPUTE #GROSS-MARGIN-PCT = #GROSS-MARGIN / #TOTAL-REVENUE * 100
+END-IF
+WRITE 'GROSS MARGIN         :' #GROSS-MARGIN
+WRITE 'GROSS MARGIN %       :' #GROSS-MARGIN-PCT '%'
+*
+WRITE ' '
+WRITE 'END OF REPORT'
+*
+END

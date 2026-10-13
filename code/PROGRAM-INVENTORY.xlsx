@@ -1,0 +1,343 @@
+===============================================================================
+ RETAILCORE - PROGRAM INVENTORY AND DEPENDENCY MAP
+===============================================================================
+ DOCUMENT: PROGRAM-INVENTORY
+ VERSION:  3.0
+ CREATED:  2024-03-15
+ PURPOSE:  COMPLETE INVENTORY OF ALL PROGRAMS, SUBPROGRAMS,
+           AND COPYCODE WITH DEPENDENCY RELATIONSHIPS
+===============================================================================
+
+SUMMARY
+-------
+TOTAL FILES:    ~100
+COPYCODE (NSC):  12
+PROGRAMS (NSP):  19
+SUBPROGRAMS (NSN): ~70
+ESTIMATED LOC:  ~35,000
+
+===============================================================================
+1. COPYCODE FILES (.NSC) - SHARED DATA STRUCTURES
+===============================================================================
+
+FILE NAME       DOMAIN    PURPOSE                          USED BY
+--------------  --------  -------------------------------  --------
+COMMON-COPY     COMMON    Common work fields, return code  ALL
+ERROR-COPY      COMMON    Error handling data area         ALL
+DATE-COPY       UTILITY   Date manipulation fields         DATEU
+CUS-COPY        CUSTOMER  Customer entity data area        CUST*
+PROD-COPY       PRODUCT   Product entity data area         PROD*
+STORE-COPY      STORE     Store/warehouse data area        STORE*,WH*
+INV-COPY        INVENTORY Inventory entity data area       INV*
+ORD-COPY        ORDER     Order entity data area           ORD*
+PRICE-COPY      PRICING   Pricing calculation fields       *PRICE*,PROM*
+SUPP-COPY       PROCURE   Supplier/PO data area            SUPP*,PO*
+PAY-COPY        PAYMENT   Payment entity data area         PAY*,SHIP*
+RET-COPY        RETURNS   Return entity data area          RET*
+
+===============================================================================
+2. COMMON / UTILITY PROGRAMS
+===============================================================================
+
+FILE NAME       TYPE  DOMAIN    PURPOSE
+--------------  ----  --------  ----------------------------------------
+ABORTN.NSN      SUB   COMMON    Abnormal termination handler
+LOGERR.NSN      SUB   COMMON    Error logging to ERROR-LOG (file 200)
+AUDITN.NSN      SUB   COMMON    Audit trail writer to AUDIT-LOG (file 210)
+SEQNON.NSN      SUB   COMMON    Sequence number generator (file 220)
+DATEU.NSN       SUB   UTILITY   Date utilities (format, diff, validate)
+VALU.NSN        SUB   UTILITY   Field validation (email, phone, zip, etc.)
+FMTU.NSN        SUB   UTILITY   Format utilities (currency, masks, etc.)
+MSGHU.NSN       SUB   UTILITY   Message handler (file 230)
+LOCKN.NSN       SUB   UTILITY   Record locking manager (file 240)
+CONFIGN.NSN     SUB   UTILITY   Configuration manager (file 250)
+
+DEPENDENCY CHAIN:
+  ABORTN -> LOGERR (logs before abort)
+  LOGERR -> (writes to file 200)
+  AUDITN -> (writes to file 210)
+  SEQNON -> (reads/updates file 220)
+  LOCKN  -> (reads/updates file 240)
+  CONFIGN-> (reads file 250)
+  MSGHU  -> (reads file 230)
+
+===============================================================================
+3. CUSTOMER MANAGEMENT DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+CUSTENTR.NSP    PGM   Interactive customer entry UI     CUSTVAL,CUSTGET,
+                                                        SEQNON,AUDITN
+CUSTGET.NSN     SUB   Retrieve customer by ID/email     (none)
+CUSTVAL.NSN     SUB   Validate customer data             VALU
+CUSTUPD.NSN     SUB   Update customer record             CUSTVAL,AUDITN
+CUSTHIST.NSN    SUB   Customer order/activity history    (none)
+CUSTSTAT.NSN    SUB   Customer statistics & loyalty      (none)
+
+ADABAS FILES: 100 (CUSTOMER)
+
+===============================================================================
+4. PRODUCT & MERCHANDISE DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+PRODENTR.NSP    PGM   Interactive product entry UI       PRODVAL,PRODGET,
+                                                        SEQNON,AUDITN
+PRODGET.NSN     SUB   Retrieve product by ID/SKU         (none)
+PRODVAL.NSN     SUB   Validate product data              VALU
+PRODUPD.NSN     SUB   Update product record              PRODVAL,AUDITN
+SKUVAL.NSN      SUB   SKU format and uniqueness check    (none)
+PRODCAT.NSN     SUB   Category management (CRUD)         AUDITN
+PRODSTAT.NSN    SUB   Product statistics & sales data    (none)
+
+ADABAS FILES: 101 (PRODUCT), 102 (CATEGORY)
+
+===============================================================================
+5. STORE & WAREHOUSE DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+STOREGET.NSN    SUB   Retrieve store by ID               (none)
+STOREVAL.NSN    SUB   Validate store data                VALU
+STOREUPD.NSN    SUB   Update store record                STOREVAL,AUDITN
+WHGET.NSN       SUB   Retrieve warehouse by ID           (none)
+WHVAL.NSN       SUB   Validate warehouse data            (none)
+WHUPD.NSN       SUB   Update warehouse record            WHVAL,AUDITN
+LOCVAL.NSN      SUB   Location validation (store or WH)  STOREGET,WHGET
+
+ADABAS FILES: 103 (STORE), 104 (WAREHOUSE)
+
+===============================================================================
+6. INVENTORY MANAGEMENT DOMAIN (LARGEST)
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+INVCHK.NSN      SUB   Check inventory availability       (none)
+INVGET.NSN      SUB   Retrieve inventory record           (none)
+INVRES.NSN      SUB   Create inventory reservation        INVCHK,SEQNON,
+                       ** CONTAINS KNOWN BUG **            AUDITN
+INVREL.NSN      SUB   Release reservation                 AUDITN
+INVUPD.NSN      SUB   Update inventory quantities         AUDITN
+INVADJ.NSN      SUB   Inventory adjustment (count/dmg)    INVGET,SEQNON,
+                                                          AUDITN
+INVTRN.NSN      SUB   Inter-location transfer             INVCHK,INVUPD,
+                                                          SEQNON,AUDITN
+INVREC.NSN      SUB   Inventory reconciliation            INVGET,SEQNON,
+                                                          AUDITN
+INVREPL.NSN     SUB   Replenishment calculation/request   INVGET,CONFIGN,
+                                                          SEQNON,AUDITN
+INVBACK.NSN     SUB   Backorder processing                INVCHK,AUDITN
+
+ADABAS FILES: 105 (INVENTORY), 106 (RESERVATION), 107 (ADJUSTMENT),
+              108 (TRANSFER), 109 (RECONCILIATION), 110 (REPLENISHMENT)
+
+KNOWN ISSUES:
+- INVRES.NSN: Contains intentional bug - does not validate that
+  reservation quantity <= available quantity in all code paths.
+  Discovered in production 2019, documented but not fixed due to
+  risk of regression in dependent modules.
+
+===============================================================================
+7. ORDER MANAGEMENT DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+ORDENTR.NSP     PGM   Interactive order entry UI         CUSTGET,PRODGET,
+                                                        INVCHK,ORDVAL,
+                                                        ORDPRICE/ORDPRICE2,
+                                                        ORDLINE,SEQNON,
+                                                        ORDPOST,AUDITN
+ORDVAL.NSN      SUB   Order validation rules             CUSTGET,LOCVAL
+ORDGET.NSN      SUB   Retrieve order by ID/number        (none)
+ORDLINE.NSN     SUB   Order line management              PRODGET,SEQNON,
+                                                        AUDITN
+ORDPOST.NSN     SUB   Order status transitions           AUDITN
+ORDPRICE.NSN    SUB   ** LEGACY ** Pricing calculation   (none)
+                       REPLACED BY ORDPRICE2
+ORDPRICE2.NSN   SUB   New pricing engine (10-step)       PROMCALC,TAXCALC,
+                                                        CONFIGN
+ORDCANC.NSN     SUB   Order cancellation (full/partial)  INVREL,ORDPOST,
+                                                        PAYREV,AUDITN
+ORDUPD.NSN      SUB   Order header update                ORDPOST,AUDITN
+ORDHIST.NSN     SUB   Order status history retrieval     (none)
+ORDDUP.NSN      SUB   Duplicate order detection          (none)
+ORDINV.NSN      SUB   Order inventory check              INVCHK
+ORDCONF.NSN     SUB   Order confirmation + fraud check   ORDINV,ORDPOST,
+                                                        SEQNON,ALLOCATE,
+                                                        AUDITN
+ORDSRCH.NSN     SUB   Order search (multi-criteria)      (none)
+
+ADABAS FILES: 111 (ORDER), 112 (ORDER-LINE), 113 (ORDER-HISTORY)
+
+TECHNICAL DEBT:
+- ORDPRICE.NSN kept for backward compatibility (some batch jobs
+  still reference it). ORDPRICE2.NSN is the current engine.
+- ORDENTR.NSP has a fallback: tries ORDPRICE2 first, falls back
+  to ORDPRICE if ORDPRICE2 fails.
+
+===============================================================================
+8. PRICING & PROMOTIONS DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+STOREPRICE.NSN  SUB   Store-specific price management    AUDITN
+PROMCALC.NSN    SUB   Promotion price calculator          (none)
+PROMVAL.NSN     SUB   Promotion validation rules         (none)
+PROMMGMT.NSN    SUB   Promotion lifecycle management     PROMVAL,SEQNON,
+                                                        AUDITN
+CPNVAL.NSN      SUB   Coupon validation & redemption     SEQNON,AUDITN
+WEBPRICE.NSN    SUB   Web channel pricing                PROMCALC,CPNVAL,
+                                                        CONFIGN
+TAXCALC.NSN     SUB   Tax calculation engine             CONFIGN
+
+ADABAS FILES: 120 (STORE-PRICE), 121 (PROMOTION), 122 (PROMO-ITEM),
+              123 (COUPON), 124 (TAX-RATE)
+
+TECHNICAL DEBT:
+- TAXCALC.NSN contains hardcoded state tax rates as fallback
+  when tax code lookup fails. Should be table-driven.
+
+===============================================================================
+9. PROCUREMENT & SUPPLIER DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+SUPPGET.NSN     SUB   Full supplier retrieval             (none)
+SUPPVAL.NSN     SUB   Supplier validation rules           VALU
+SUPPUPD.NSN     SUB   Supplier update (non-interactive)   AUDITN
+POENTR.NSP      PGM   Interactive PO entry UI             SUPPGET,PRODGET,
+                                                          SKUVAL,SEQNON,
+                                                          POVAL,AUDITN
+POVAL.NSN       SUB   PO status management               AUDITN
+POGET.NSN       SUB   Complete PO retrieval               (none)
+PORECV.NSN      SUB   PO goods receipt processing         INVUPD,CONFIGN,
+                                                          INVBACK,AUDITN
+POCLOSE.NSN     SUB   PO closure & variance calc          SUPPUPD,AUDITN
+SUPPREC.NSN     SUB   Supplier scorecard/evaluation       (none)
+
+ADABAS FILES: 130 (SUPPLIER), 131 (PO-HEADER), 132 (PO-LINE)
+
+===============================================================================
+10. PAYMENT & FULFILLMENT DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+PAYAUTH.NSN     SUB   Payment authorization               SEQNON,AUDITN
+PAYCAP.NSN      SUB   Payment capture                     SEQNON,AUDITN
+PAYREV.NSN      SUB   Payment reversal/refund             SEQNON,AUDITN
+ALLOCATE.NSN    SUB   Fulfillment allocation              INVUPD,ORDPOST,
+                                                          SEQNON,AUDITN
+SHIPENTR.NSN    SUB   Shipment creation                   PAYCAP,ORDPOST,
+                                                          SEQNON,AUDITN
+SHIPUPD.NSN     SUB   Shipment status update              INVUPD,ORDPOST,
+                                                          AUDITN
+PAYREC.NSN      SUB   Payment reconciliation report       (none)
+
+ADABAS FILES: 140 (PAYMENT), 141 (SHIPMENT), 142 (SHIPMENT-LINE),
+              143 (SETTLEMENT)
+
+===============================================================================
+11. RETURNS & REFUNDS DOMAIN
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+RETENTR.NSP     PGM   Interactive return entry UI         ORDGET,RETCHK,
+                                                          RETVAL,SEQNON,
+                                                          ORDPOST,AUDITN
+RETCHK.NSN      SUB   Return eligibility check            CONFIGN
+RETPOST.NSN     SUB   Return status management            INVUPD,PAYREV,
+                                                          AUDITN
+RETGET.NSN      SUB   Complete return retrieval            (none)
+RETVAL.NSN      SUB   Return validation rules             CONFIGN
+RETCLOSE.NSN    SUB   Return closure & summary             CUSTUPD,AUDITN
+
+ADABAS FILES: 150 (RETURN), 151 (RETURN-LINE)
+
+TECHNICAL DEBT:
+- RETVAL.NSN has hardcoded non-returnable category names
+  (UNDERWEAR, SWIMWEAR, EARRINGS, CLEARANCE, CUSTOM)
+  instead of using a configurable category flag.
+
+===============================================================================
+12. BATCH PROCESSING
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+EODORD.NSP      PGM   EOD order processing                ORDCANC,AUDITN
+EODINV.NSP      PGM   EOD inventory processing            INVREL,INVREPL,
+                                                          LOCKN
+EODSALE.NSP     PGM   EOD sales summary generation        (none)
+EODPAY.NSP      PGM   EOD payment processing              AUDITN
+EODPROM.NSP     PGM   EOD promotion maintenance            AUDITN
+EODRECON.NSP    PGM   Master reconciliation checks         AUDITN
+EODRET.NSP      PGM   EOD return processing                AUDITN
+EODSUPP.NSP     PGM   EOD supplier performance             AUDITN
+
+BATCH EXECUTION ORDER (RECOMMENDED):
+  1. EODORD   - Process stale orders first
+  2. EODINV   - Expire reservations, trigger replenishment
+  3. EODPAY   - Settle payments, expire auths
+  4. EODPROM  - Activate/deactivate promotions
+  5. EODRET   - Expire stale returns, auto-close
+  6. EODSUPP  - Recalculate supplier ratings
+  7. EODSALE  - Generate sales summary (read-only)
+  8. EODRECON - Final reconciliation check (read-only)
+
+===============================================================================
+13. REPORTS
+===============================================================================
+
+FILE NAME       TYPE  PURPOSE                          CALLS
+--------------  ----  -------------------------------  ------------------
+DAILYSALES.NSP  PGM   Daily sales detail report           (none)
+INVSTATUS.NSP   PGM   Inventory status report             (none)
+LOWSTOCK.NSP    PGM   Low stock alert report              (none)
+STOREPERF.NSP   PGM   Store performance analysis          (none)
+PRODMOV.NSP     PGM   Product movement/velocity report    (none)
+RETREPORT.NSP   PGM   Returns analysis report             (none)
+SUPPSTAT.NSP    PGM   Supplier performance scorecard      (none)
+PROMPERF.NSP    PGM   Promotion performance report        (none)
+ORDERSTAT.NSP   PGM   Order status pipeline report        (none)
+PAYRECON.NSP    PGM   Payment reconciliation report       (none)
+
+NOTES:
+- Reports are read-only (no data modifications)
+- All reports have safety counters to limit scan depth
+- Reports do not call AUDITN (no audit trail for reads)
+
+===============================================================================
+14. END-TO-END PROCESS FLOWS
+===============================================================================
+
+ORDER-TO-CASH FLOW:
+  CUSTENTR -> ORDENTR -> ORDVAL -> INVCHK -> INVRES
+  -> ORDPRICE2 -> ORDCONF -> PAYAUTH -> ALLOCATE
+  -> SHIPENTR -> SHIPUPD (delivered) -> order CMP
+
+PROCURE-TO-PAY FLOW:
+  POENTR -> POVAL (submit/approve) -> PORECV
+  -> INVUPD (receipt) -> POCLOSE -> SUPPUPD (spend)
+
+RETURN FLOW:
+  RETENTR -> RETCHK -> RETVAL -> RETPOST (approve)
+  -> RETPOST (receive) -> RETPOST (inspect)
+  -> RETPOST (restock/damage) -> PAYREV (refund)
+  -> RETCLOSE -> CUSTUPD (spend adjustment)
+
+EOD BATCH FLOW:
+  EODORD -> EODINV -> EODPAY -> EODPROM -> EODRET
+  -> EODSUPP -> EODSALE -> EODRECON
+
+===============================================================================
+END OF DOCUMENT
+===============================================================================
